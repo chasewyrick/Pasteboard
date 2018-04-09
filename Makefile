@@ -1,11 +1,13 @@
-export TARGET = iphone:clang:6.1
-export ARCHS = armv7
+export TARGET ?= iphone:clang:9.3:3.0
+export ARCHS ?= armv6 arm64
 
 include $(THEOS)/makefiles/common.mk
 
 TOOL_NAME = pasteboard
 pasteboard_FILES = main.mm
-pasteboard_FRAMEWORKS = UIKit MobileCoreServices
+pasteboard_FRAMEWORKS = UIKit MobileCoreServices Foundation
+pasteboard_LIBRARIES = magic
+pasteboard_CODESIGN_FLAGS = -Sent.xml
 
 include $(THEOS_MAKE_PATH)/tool.mk
 

@@ -1,12 +1,15 @@
 #include <objc/runtime.h>
 #include <objc/message.h>
+//#include <substrate.h>
 #include <pthread.h>
+#include <magic.h>
 
 #include <getopt.h> // getopt_long()
 #include <libgen.h> // basename()
 
 #import <UIKit/UIPasteboard.h>
 #import <MobileCoreServices/MobileCoreServices.h>
+#import <MobileCoreServices/UTType.h>
 
 //#include <unistd.h>
 //#include <sys/syslimits.h> // PATH_MAX
@@ -26,12 +29,11 @@ NSString * const kUIKitTypeColor = @"com.apple.uikit.color";
 NSString * const kUIKitTypeImage = @"com.apple.uikit.image";
 
 // Apple decided to call the unsymbolicated function `_UIPasteboardInitialize` from within `UIApplicationMain` instead of calling it from `UIPasteboard`'s +load or +initialize. Therefore we have to make it ourselves for UIPasteboard to work (namely the fast accessors .string/s, .image/s, .url/s and .color/s).
-__attribute__((constructor))
 void _UIPasteboardInitialize() {
-	UIPasteboardTypeListString = [NSArray arrayWithObjects: (id)kUTTypeUTF8PlainText, (id)kUTTypeText, nil];
-	UIPasteboardTypeListURL    = [NSArray arrayWithObjects: (id)kUTTypeURL, nil];
-	UIPasteboardTypeListImage  = [NSArray arrayWithObjects: (id)kUTTypePNG, (id)kUTTypeTIFF, (id)kUTTypeJPEG, (id)kUTTypeGIF, kUIKitTypeImage, nil];
-	UIPasteboardTypeListColor  = [NSArray arrayWithObjects: kUIKitTypeColor, nil];
+	UIPasteboardTypeListString = @[(id)kUTTypeUTF8PlainText, (id)kUTTypeText];
+	UIPasteboardTypeListURL    = @[(id)kUTTypeURL];
+	UIPasteboardTypeListImage  = @[(id)kUTTypePNG, (id)kUTTypeTIFF, (id)kUTTypeJPEG, (id)kUTTypeGIF, kUIKitTypeImage];
+	UIPasteboardTypeListColor  = @[kUIKitTypeColor];
 }
 
 NSString * const kPBPrivateTypeDefault = @"private.default";
@@ -84,26 +86,42 @@ NSString * PBCreateFilePathFromFd(int fd) {
 	}
 	NSString * string = [[NSString alloc] initWithUTF8String:filePath];
 	free(filePath);
-	return string;
+	return [string autorelease];
 }
 
 NSString * PBCreateUTIStringFromFilePath(NSString * filePath) {
+	NSString * type = (id)kUTTypePlainText;
 	if (!filePath) {
-		return nil;
+		return type;
 	}
-	return (NSString *)UTTypeCreatePreferredIdentifierForTag(
-		kUTTagClassFilenameExtension,
-		(CFStringRef)filePath.pathExtension,
-		NULL);
+
+	magic_t cookie = magic_open(MAGIC_MIME_TYPE);
+	const char *magic=NULL;
+	if (cookie && magic_load(cookie, NULL)==0 && (magic = magic_file(cookie, filePath.UTF8String))) {
+		NSString *uti = (id)UTTypeCreatePreferredIdentifierForTag(kUTTagClassMIMEType, (CFStringRef)@(magic), NULL);
+		if ([uti hasPrefix:@"dyn."]) {
+			uti = (id)UTTypeCreatePreferredIdentifierForTag(kUTTagClassFilenameExtension, (CFStringRef)filePath.pathExtension, NULL);
+			if ([uti hasPrefix:@"dyn."]) {
+				uti = nil;
+			}
+		}
+		if (uti)
+			type = uti;
+	} else {
+		fprintf(stderr, "no magic for %s :( (%s)\n", filePath.UTF8String, magic_error(cookie));
+	}
+
+	//fprintf(stderr, "Detected type: %s for mime magic %s\n", type.UTF8String, magic);
+
+	magic_close(cookie);
+	return [type autorelease];
 }
 
 PBPasteboardType PBPasteboardTypeOfFd(int fd) {
 	@autoreleasepool {
 		NSString * path = PBCreateFilePathFromFd(fd);
-		//fprintf(stderr, "Path %s\n", path.UTF8String);
 		NSString * UTI = PBCreateUTIStringFromFilePath(path);
 		//fprintf(stderr, "UTI %s\n", UTI.UTF8String);
-		[path release];
 
 		NSArray * typesArray = [NSArray arrayWithObjects:
 			[NSArray arrayWithObjects: kPBPrivateTypeDefault, nil],
@@ -120,7 +138,6 @@ PBPasteboardType PBPasteboardTypeOfFd(int fd) {
 				break;
 			}
 		}
-		[UTI release];
 		return (PBPasteboardType)index;
 	}
 }
@@ -164,8 +181,8 @@ char * PBCreateBufferFromFd(int fd, size_t * length) {
 	return buffer;
 }
 
-char * PBPasteboardSaveImage(UIImage * image, char * path, size_t * lengthPtr) {
-	if (!image) {
+char * PBPasteboardSaveImage(UIPasteboard * generalPb, char * path, size_t * lengthPtr) {
+	if (!generalPb) {
 		return NULL;
 	}
 
@@ -183,11 +200,19 @@ char * PBPasteboardSaveImage(UIImage * image, char * path, size_t * lengthPtr) {
 
 	switch ([supportedExtensions indexOfObject:ext]) {
 		case 0: {
-			data = UIImagePNGRepresentation(image);
+			data = [generalPb valueForPasteboardType:@"public.png"];
+			// This seems to change somewhere between iOS3 and 11 :|
+			if ([data isKindOfClass:[UIImage class]]) {
+				data = UIImagePNGRepresentation((UIImage*)data);
+			}
 		} break;
 
 		case 1: {
-			data = UIImageJPEGRepresentation(image, 1.0);
+			data = [generalPb valueForPasteboardType:@"public.jpg"];
+			// This seems to change somewhere between iOS3 and 11 :|
+			if ([data isKindOfClass:[UIImage class]]) {
+				data = UIImageJPEGRepresentation((UIImage*)data, 1.0);
+			}
 		} break;
 		default: {
 			fprintf(stderr,
@@ -211,7 +236,7 @@ char * PBPasteboardSaveImage(UIImage * image, char * path, size_t * lengthPtr) {
 		size_t length = 0;
 		buffer = PBCreateBufferFromFd(fd, &length);
 		close(fd);
-		[NSFileManager.defaultManager removeItemAtURL:fileURL error:&error];
+		[NSFileManager.defaultManager removeItemAtPath:fileURL.path error:&error];
 		if (length > 0) {
 			*lengthPtr = length;
 		}
@@ -220,38 +245,23 @@ char * PBPasteboardSaveImage(UIImage * image, char * path, size_t * lengthPtr) {
 }
 
 void PBPasteboardPerformCopy(int fd, PBPasteboardType overrideType) {
-	PBPasteboardType inType = (overrideType != PBPasteboardTypeDefault) ? overrideType : PBPasteboardTypeOfFd(fd);
+	NSString *inType = (overrideType != PBPasteboardTypeDefault) ? types[overrideType] : PBCreateUTIStringFromFilePath(PBCreateFilePathFromFd(fd));
 
 	UIPasteboard * generalPb = UIPasteboard.generalPasteboard;
 
-	//const char * inTypeString = PBPasteboardTypeGetStringFromType(inType);
-	//fprintf(stderr, "copy: Resource type <%s>.\n", inTypeString);
-
-	switch (inType) {
-		default: {
-			NSString * path = PBCreateFilePathFromFd(fd);
-			NSString * actualUTI = PBCreateUTIStringFromFilePath(path);
-			[path release];
-			//fprintf(stderr, "copy: Resource type <%s> unsupported. Performing default action.\n", actualUTI.UTF8String);
-			[actualUTI release];
-		}
-		case PBPasteboardTypeString: {
+	if (UTTypeConformsTo((CFStringRef)inType, kUTTypePlainText)) {
 			size_t length = 0;
 			char * string = PBCreateBufferFromFd(fd, &length);
 			if (length < 1) {
-				break;
+				return;
 			}
-			NSString * dataString = [NSString stringWithUTF8String:string];
+			[generalPb setValue:@(string) forPasteboardType:inType];
 			free(string);
-			generalPb.string = dataString;
-		} break;
-
-		case PBPasteboardTypeImage: {
+	} else {
 			char * path = filePathFromFd(fd);
-			UIImage * image = [UIImage imageWithContentsOfFile:@(path)];
-			generalPb.image = image;
+			NSString *nsPath = @(path);
 			free(path);
-		} break;
+			generalPb.items =  @[@{inType : [NSData dataWithContentsOfFile:nsPath], (id)kUTTypeUTF8PlainText : [nsPath lastPathComponent]}];
 	}
 }
 
@@ -259,6 +269,12 @@ void PBPasteboardPerformPaste(int fd, PBPasteboardType overrideType) {
 	PBPasteboardType outType = (overrideType != PBPasteboardTypeDefault) ? overrideType : PBPasteboardTypeOfFd(fd);
 
 	UIPasteboard * generalPb = UIPasteboard.generalPasteboard;
+	//CFShow(generalPb.items);
+	FILE *stream = fdopen(fd, "w");
+	if (!stream) {
+		fprintf(stderr, "ERROR: %s\n", strerror(errno));
+		return;
+	}
 
 	//const char * outTypeString = PBPasteboardTypeGetStringFromType(outType);
 	//fprintf(stderr, "paste: Resource type <%s>.\n", outTypeString);
@@ -267,22 +283,20 @@ void PBPasteboardPerformPaste(int fd, PBPasteboardType overrideType) {
 		default: {
 			NSString * path = PBCreateFilePathFromFd(fd);
 			NSString * actualUTI = PBCreateUTIStringFromFilePath(path);
-			[path release];
 			//fprintf(stderr, "paste: Resource type <%s> unsupported. Performing default action.\n", actualUTI.UTF8String);
-			[actualUTI release];
 		}
 		case PBPasteboardTypeString: {
 			if (generalPb.string) {
-				dprintf(fd, "%s", generalPb.string.UTF8String);
+				fprintf(stream, "%s", generalPb.string.UTF8String);
 			} else {
-				dprintf(fd, "\n");
+				fprintf(stream, "\n");
 			}
 		} break;
 
 		case PBPasteboardTypeImage: {
 			char * path = filePathFromFd(fd);
 			size_t length = 0;
-			char * raw = PBPasteboardSaveImage(generalPb.image, path, &length);
+			char * raw = PBPasteboardSaveImage(generalPb, path, &length);
 			if (!raw) {
 				fprintf(stderr, "No buffer.\n");
 				break;
@@ -314,7 +328,25 @@ void PBPasteboardPrintHelp(int argc, char **argv, char **envp) {
 }
 
 int main(int argc, char **argv, char **envp) {
+	/*
+	// This would work for anything with working Substrate but apparently dies under Substitute
+	fprintf(stderr, "Getting image\n");
+	MSImageRef image = MSGetImageByName("/System/Library/Frameworks/UIKit.framework/UIKit");
+	if (!image) {
+		fprintf(stderr, "Error: Unable to find UIKit?\?!?\n");
+		exit(1);
+	}
+	fprintf(stderr, "Getting symbol\n");
+	_UIPasteboardInitialize = (void (*)(void))MSFindSymbol(image, "__UIPasteboardInitialize");
+	if (_UIPasteboardInitialize == NULL) {
+		fprintf(stderr, "Error: Couldn't find _UIPasteboardInitialize\n");
+		exit(1);
+	}
+	fprintf(stderr, "Calling symbol %p\n", _UIPasteboardInitialize);
+	_UIPasteboardInitialize();
+	*/
 	@autoreleasepool {
+		_UIPasteboardInitialize();
 		int help_flag = 0;
 		PBPasteboardType overrideType = PBPasteboardTypeDefault;
 

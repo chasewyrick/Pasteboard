@@ -1,8 +1,7 @@
 Package: com.uroboro.pasteboard
 Name: Pasteboard CLI
-Depends: firmware (>= 1.0)
-Conflicts: com.ericasadun.utilities
-Version: 0.0.1
+Depends: firmware (>= 3.0), com.bingner.utilities, file
+Version: 0.0.2
 Architecture: iphoneos-arm
 Description: Provides advanced pbcopy & pbpaste. Supports strings, urls, images and colors. How can you copy or paste a color I don't know.
 Maintainer: uroboro <uroboro845@gmail.com>
