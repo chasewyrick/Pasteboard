@@ -6,7 +6,7 @@ include $(THEOS)/makefiles/common.mk
 TOOL_NAME = pasteboard
 pasteboard_FILES = main.mm
 pasteboard_FRAMEWORKS = UIKit MobileCoreServices Foundation
-pasteboard_LIBRARIES = magic
+pasteboard_LIBRARIES = magic substrate
 pasteboard_CODESIGN_FLAGS = -Sent.xml
 
 include $(THEOS_MAKE_PATH)/tool.mk
