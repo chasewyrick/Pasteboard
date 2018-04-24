@@ -402,6 +402,8 @@ int main(int argc, char **argv, char **envp) {
 		int outFD = STDOUT_FILENO;
 
 		PBPasteboardMode mode =
+			strcmp(argv[0], "pbcopy")==0 ? PBPasteboardModeCopy :
+			strcmp(argv[0], "pbpaste")==0 ? PBPasteboardModePaste :
 			isatty(inFD) ? PBPasteboardModePaste :
 			isatty(outFD) ? PBPasteboardModeCopy :
 			PBPasteboardModeCopy | PBPasteboardModePaste;
